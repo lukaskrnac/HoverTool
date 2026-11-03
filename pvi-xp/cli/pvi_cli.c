@@ -54,6 +54,8 @@ __declspec(dllimport) U32      PVIAPI GetModuleFileNameA(HPVI_OBJ mod, char *buf
 __declspec(dllimport) U32      PVIAPI GetEnvironmentVariableA(const char *name, char *buf, U32 n);
 __declspec(dllimport) char *   PVIAPI GetCommandLineA(void);
 __declspec(dllimport) void     PVIAPI Sleep(U32 ms);
+typedef struct { U16 wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds; } T_SYSTIME;
+__declspec(dllimport) void     PVIAPI GetLocalTime(T_SYSTIME *st);
 __declspec(dllimport) I32      PVIAPI RegOpenKeyExA(HPVI_OBJ key, const char *sub, U32 opt, U32 sam, HPVI_OBJ *res);
 __declspec(dllimport) I32      PVIAPI RegQueryValueExA(HPVI_OBJ key, const char *name, U32 *res, U32 *type, U8 *data, U32 *cb);
 __declspec(dllimport) I32      PVIAPI RegCloseKey(HPVI_OBJ key);
@@ -138,6 +140,11 @@ static HPVI_OBJ g_out;
 static char     g_buf[1024];
 static int      g_buflen;
 
+/* "capture" rezim: out() ide do bufferu (pre monitor - porovnavanie zmien) */
+static int  g_capture;
+static char g_capbuf[1024];
+static int  g_caplen;
+
 static void out_flush(void)
 {
     U32 written = 0;
@@ -153,8 +160,16 @@ static void out(const char *s)
 {
     while (s && *s)
     {
-        if (g_buflen >= (int)sizeof(g_buf) - 1) out_flush();
-        g_buf[g_buflen++] = *s++;
+        if (g_capture)
+        {
+            if (g_caplen < (int)sizeof(g_capbuf) - 1) g_capbuf[g_caplen++] = *s;
+        }
+        else
+        {
+            if (g_buflen >= (int)sizeof(g_buf) - 1) out_flush();
+            g_buf[g_buflen++] = *s;
+        }
+        s++;
     }
 }
 
@@ -280,6 +295,31 @@ static void dbl_to_dec(double v, char *dst)
         p = fs + 1 + lastNonZero;                /* odstran nuly na konci */
     }
     *p = 0;
+}
+
+/* --- casova peciatka HH:MM:SS.mmm (bez libc) ------------------------------ */
+static void app2(char *dst, int max, U32 v)
+{
+    char n[8];
+    u64_to_dec((U64)v, n);
+    if (v < 10) s_cat(dst, "0", max);
+    s_cat(dst, n, max);
+}
+
+static void timestamp(char *dst, int max)
+{
+    T_SYSTIME st;
+    char n[8];
+
+    GetLocalTime(&st);
+    dst[0] = 0;
+    app2(dst, max, st.wHour);   s_cat(dst, ":", max);
+    app2(dst, max, st.wMinute); s_cat(dst, ":", max);
+    app2(dst, max, st.wSecond); s_cat(dst, ".", max);
+    u64_to_dec((U64)st.wMilliseconds, n);
+    if (st.wMilliseconds < 100) s_cat(dst, "0", max);
+    if (st.wMilliseconds < 10)  s_cat(dst, "0", max);
+    s_cat(dst, n, max);
 }
 
 /* --- parsovanie ----------------------------------------------------------- */
@@ -420,6 +460,8 @@ static U32  g_hPvi;
 static char g_dllpath[512];
 static int  g_verbose;
 static int  g_nopause;
+static char g_taskbuf[128];
+static char g_varbuf[256];
 
 typedef struct { U32 linkID, nMode, nType, errCode, status; } T_RESPONSE_INFO;
 typedef struct { U8 state0, state1, inv0, inv1; U32 res1; char lcName[65]; } T_LIC;
@@ -1020,6 +1062,7 @@ static void usage(void)
     outln("  pvi_cli list  [--filter <text>]");
     outln("  pvi_cli read  <premenna>");
     outln("  pvi_cli write <premenna> <hodnota>");
+    outln("  pvi_cli m     <premenna> [ms]      sleduj zmeny (Ctrl+C = koniec)");
     outln("");
     outln("Parametre:");
     outln("  --filter <text>   len premenne obsahujuce text (pre 'list')");
@@ -1122,10 +1165,31 @@ static int run(int argc, char **argv)
     }
 
     if (!cmd) { usage(); return 1; }
-    if (s_icmp(cmd, "read") == 0 && !var)             { out_errln("chyba: chyba nazov premennej"); return 1; }
+
+    /* podpora zapisu "task:premenna" (rovnake ako --task) */
+    if (var && !taskName)
+    {
+        int k, colon = -1;
+        for (k = 0; var[k]; k++) if (var[k] == ':') { colon = k; break; }
+        if (colon > 0)
+        {
+            int n = colon;
+            if (n > (int)sizeof(g_taskbuf) - 1) n = (int)sizeof(g_taskbuf) - 1;
+            for (k = 0; k < n; k++) g_taskbuf[k] = var[k];
+            g_taskbuf[n] = 0;
+            s_cpy(g_varbuf, var + colon + 1, (int)sizeof(g_varbuf));
+            taskName = g_taskbuf;
+            var = g_varbuf;
+        }
+    }
+
+    if ((s_icmp(cmd, "read") == 0 || s_icmp(cmd, "m") == 0 || s_icmp(cmd, "mon") == 0 ||
+         s_icmp(cmd, "monitor") == 0) && !var)
+    { out_errln("chyba: chyba nazov premennej"); return 1; }
     if (s_icmp(cmd, "write") == 0 && (!var || !val))  { out_errln("chyba: chyba premenna alebo hodnota"); return 1; }
-    if (s_icmp(cmd, "read") != 0 && s_icmp(cmd, "write") != 0 &&
-        s_icmp(cmd, "info") != 0 && s_icmp(cmd, "list") != 0)
+    if (s_icmp(cmd, "read") != 0 && s_icmp(cmd, "write") != 0 && s_icmp(cmd, "info") != 0 &&
+        s_icmp(cmd, "list") != 0 && s_icmp(cmd, "m") != 0 &&
+        s_icmp(cmd, "mon") != 0 && s_icmp(cmd, "monitor") != 0)
     { out_err("chyba: neznama operacia: "); out_errln(cmd); usage(); return 1; }
 
     if (timeout < 1) timeout = 1;
@@ -1302,6 +1366,51 @@ static int run(int argc, char **argv)
     {
         if (!read_value(idVar, &t, timeout, raw)) goto read_failed;
         out("\r\n");
+    }
+    else if (s_icmp(cmd, "m") == 0 || s_icmp(cmd, "mon") == 0 || s_icmp(cmd, "monitor") == 0)
+    {
+        int iv = 200;
+        U64 ivv;
+        char last[1024];
+        char stamp[32];
+
+        if (val && parse_u64(val, &ivv) && ivv >= 10 && ivv <= 600000) iv = (int)ivv;
+        last[0] = 0;
+
+        if (g_verbose)
+        {
+            out_err("sledujem ");
+            out_err(var);
+            out_err(" kazdych ");
+            u64_to_dec((U64)iv, num);
+            out_err(num);
+            out_errln(" ms (Ctrl+C = koniec)");
+        }
+
+        for (;;)
+        {
+            int ok;
+            g_caplen = 0;
+            g_capbuf[0] = 0;
+            g_capture = 1;
+            ok = read_value(idVar, &t, timeout, raw);
+            g_capture = 0;
+            if (!ok) goto read_failed;
+
+            if (s_cmp(g_capbuf, last) != 0)          /* vypis len pri zmene */
+            {
+                timestamp(stamp, (int)sizeof(stamp));
+                out(stamp);
+                out("  ");
+                out(var);
+                out(" = ");
+                out(g_capbuf);
+                out("\r\n");
+                out_flush();
+                s_cpy(last, g_capbuf, (int)sizeof(last));
+            }
+            Sleep((U32)iv);
+        }
     }
     else if (s_icmp(cmd, "list") == 0)
     {

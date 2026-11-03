@@ -35,6 +35,7 @@ pvi_cli info                              # verzia PVI + stav licencie
 pvi_cli list                              # zoznam premennych v PLC
 pvi_cli read  <premenna>                  # vypise hodnotu na stdout
 pvi_cli write <premenna> <hodnota>        # zapise hodnotu
+pvi_cli m     <premenna> [ms]             # sleduje zmeny a vypisuje ich (Ctrl+C koniec)
 ```
 
 ### Ako vypísať hodnotu – krok za krokom
@@ -52,6 +53,11 @@ rem   -> na obrazovku vypise napr.:  1234
 
 rem 4) zapis
 pvi_cli.exe write gTest.iCounter 1500 --ip 192.168.1.10
+
+rem 5) sledovanie zmien (ako "watch")
+pvi_cli.exe m gTest.iCounter 200 --ip 192.168.1.10
+rem   -> 13:45:07.120  gTest.iCounter = 1501
+rem      13:45:07.325  gTest.iCounter = 1502
 ```
 
 Hodnota ide na `stdout` (čistá, bez balastu — dá sa spracovať v dávke), diagnostika
@@ -203,6 +209,22 @@ rem   offset PE+24+48 = WORD major/minor subsystem version
 
 Bez `-nostdlib` by sa program zlinkoval proti UCRT (`api-ms-win-crt-*.dll`), ktorý na XP
 neexistuje — preto sú v zdrojáku vlastné `memcpy/memset/strlen` a vlastné formátovanie čísel.
+
+## Prečo `PviX*` a nie klasické `PviInitialize`/`PviRead`?
+
+Pretože **`PviX*` je to, čo mám overené z funkčnej implementácie** — [Pvi.py](https://github.com/hilch/Pvi.py)
+(open-source konektor pre PVI, pracuje s PVI 4.12 a 6.x) používa presne `PviXInitialize`,
+`PviXCreate`, `PviXRead`, `PviXWrite` a k nim som mal presné signatúry (vrátane typov, dĺžok
+a správy event fronty). Klasické API je v dokumentácii B&R vedené ako **request/response**
+(`PviReadRequest`, `PviReadResponse`, `PviWriteRequest`, `PviWriteResponse`) — teda asynchrónne,
+cez frontu správ. Ak niektorá verzia `PviCom.dll` exportuje aj synchrónne `PviRead`/`PviWrite`
+s parametrami `(link, access, arg, argLen, data, dataLen)`, je to legitímna cesta a kód je
+kratší — ale tú signatúru som si nemal ako overiť, a volanie funkcie s nesprávnou konvenciou
+či počtom argumentov zhodí proces.
+
+Preto to program **nerieši hádaním**: vypíše zoznam exportov tej DLL, ktorú našiel
+(`pvi_cli.exe info --verbose`). Podľa toho je jasné, ktoré API tvoja verzia PVI má —
+a ak má klasické, dá sa doplniť vetva preň (signatúry potom už budú overené, nie vymyslené).
 
 ## Ak DLL nemá funkcie `PviX*`
 
