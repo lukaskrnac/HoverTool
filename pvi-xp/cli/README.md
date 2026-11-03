@@ -32,9 +32,30 @@ V tomto priečinku je `pvi_cli.exe` (41 KB), zostavený a overený takto:
 
 ```
 pvi_cli info                              # verzia PVI + stav licencie
+pvi_cli list                              # zoznam premennych v PLC
 pvi_cli read  <premenna>                  # vypise hodnotu na stdout
 pvi_cli write <premenna> <hodnota>        # zapise hodnotu
 ```
+
+### Ako vypísať hodnotu – krok za krokom
+
+```bat
+rem 1) over, ze PVI bezi a PLC je na sieti
+pvi_cli.exe info --verbose
+
+rem 2) zisti presny nazov premennej (napr. len tie s "Counter")
+pvi_cli.exe list --ip 192.168.1.10 --filter Counter
+
+rem 3) precitaj hodnotu
+pvi_cli.exe read gTest.iCounter --ip 192.168.1.10
+rem   -> na obrazovku vypise napr.:  1234
+
+rem 4) zapis
+pvi_cli.exe write gTest.iCounter 1500 --ip 192.168.1.10
+```
+
+Hodnota ide na `stdout` (čistá, bez balastu — dá sa spracovať v dávke), diagnostika
+a chyby na `stderr`. Ak premenná neexistuje, dostaneš chybu z PVI (kód 5 / chybový kód PVI).
 
 Voliteľné parametre:
 
@@ -48,6 +69,7 @@ Voliteľné parametre:
 | `--cpu <nazov>` | názov CPU objektu v PVI (default `cpu`) |
 | `--task <nazov>` | ak je premenná **lokálna** v úlohe (task) |
 | `--dll <cesta>` | vynúti konkrétny `PviCom.dll` |
+| `--filter <text>` | pri `list` vypíše len premenné obsahujúce text |
 | `--timeout <s>` | ako dlho čakať na spojenie (default 5 s) |
 | `--raw` | vypíše dáta ako HEX (štruktúry, neznáme typy) |
 | `--verbose` | diagnostika na `stderr` (čo sa vytvára, aké eventy chodia) |

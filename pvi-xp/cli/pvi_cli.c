@@ -373,6 +373,7 @@ __declspec(dllimport) U32 PVIAPI GetFileAttributesA(const char *path);
 #define ACC_STATUS       12
 #define ACC_TYPE_EXTERN  14
 #define ACC_TYPE_INTERN  19
+#define ACC_LIST_PVAR    36
 #define ACC_INFO_LICENCE 200
 
 #define EV_PVI_CONNECT 240
@@ -633,6 +634,21 @@ static void out_errln(const char *s) { out_err(s); out_err("\r\n"); }
 
 static char g_typebuf[65536];
 static U8   g_databuf[65536];
+static char g_listbuf[524288];
+
+/* najdi podretazec (case-insensitive); vrati 1 ak hay obsahuje needle */
+static int s_contains_icmp(const char *hay, const char *needle)
+{
+    int i, j;
+    if (!needle || !needle[0]) return 1;
+    for (i = 0; hay[i]; i++)
+    {
+        for (j = 0; needle[j]; j++)
+            if (ch_low(hay[i + j]) != ch_low(needle[j])) break;
+        if (!needle[j]) return 1;
+    }
+    return 0;
+}
 
 /* najdi v typovom popise polozku "XX=hodnota" (napr. VT=i32) */
 static int type_field(const char *s, const char *key, char *outp, int max)
@@ -933,10 +949,12 @@ static void usage(void)
     outln("");
     outln("Pouzitie:");
     outln("  pvi_cli info");
+    outln("  pvi_cli list  [--filter <text>]");
     outln("  pvi_cli read  <premenna>");
     outln("  pvi_cli write <premenna> <hodnota>");
     outln("");
     outln("Parametre:");
+    outln("  --filter <text>   len premenne obsahujuce text (pre 'list')");
     outln("  --ip <adresa>     IP adresa PLC (default 192.168.1.10)");
     outln("  --proto ansl|ina  protokol: ansl (AR 4.08+) alebo ina (starsi AR)");
     outln("  --station <n>     INA: cielova stanica PLC  /DA=  (default 2)");
@@ -1000,7 +1018,7 @@ static int run(int argc, char **argv)
 {
     const char *cmd = 0, *var = 0, *val = 0, *dll = 0;
     const char *ip = "192.168.1.10", *proto = "ansl";
-    const char *cpuName = "cpu", *taskName = 0;
+    const char *cpuName = "cpu", *taskName = 0, *filter = 0;
     int station = 2, srcStation = 113, comPort = 0, baud = 57600;
     int timeout = 5, raw = 0, ina, i;
     char ifstr[160], nmRoot[64], nmLine[128], nmDev[256], nmCpu[384];
@@ -1020,6 +1038,7 @@ static int run(int argc, char **argv)
         else if (s_icmp(a, "--cpu") == 0 && i + 1 < argc)     cpuName = argv[++i];
         else if (s_icmp(a, "--task") == 0 && i + 1 < argc)    taskName = argv[++i];
         else if (s_icmp(a, "--dll") == 0 && i + 1 < argc)     dll = argv[++i];
+        else if (s_icmp(a, "--filter") == 0 && i + 1 < argc)  filter = argv[++i];
         else if (s_icmp(a, "--station") == 0 && i + 1 < argc) { parse_u64(argv[++i], &v); station = (int)v; }
         else if (s_icmp(a, "--src") == 0 && i + 1 < argc)     { parse_u64(argv[++i], &v); srcStation = (int)v; }
         else if (s_icmp(a, "--com") == 0 && i + 1 < argc)     { parse_u64(argv[++i], &v); comPort = (int)v; }
@@ -1037,7 +1056,8 @@ static int run(int argc, char **argv)
     if (!cmd) { usage(); return 1; }
     if (s_icmp(cmd, "read") == 0 && !var)             { out_errln("chyba: chyba nazov premennej"); return 1; }
     if (s_icmp(cmd, "write") == 0 && (!var || !val))  { out_errln("chyba: chyba premenna alebo hodnota"); return 1; }
-    if (s_icmp(cmd, "read") != 0 && s_icmp(cmd, "write") != 0 && s_icmp(cmd, "info") != 0)
+    if (s_icmp(cmd, "read") != 0 && s_icmp(cmd, "write") != 0 &&
+        s_icmp(cmd, "info") != 0 && s_icmp(cmd, "list") != 0)
     { out_err("chyba: neznama operacia: "); out_errln(cmd); usage(); return 1; }
 
     if (timeout < 1) timeout = 1;
@@ -1192,6 +1212,41 @@ static int run(int argc, char **argv)
         if (!read_value(idVar, &t, timeout, raw)) goto read_failed;
         out("\r\n");
     }
+    else if (s_icmp(cmd, "list") == 0)
+    {
+        int waited = 0, n = 0, k;
+        char name[256];
+
+        for (;;)
+        {
+            mem_zero(g_listbuf, (U32)sizeof(g_listbuf));
+            prc = f_read(g_hPvi, idCpu, ACC_LIST_PVAR, 0, 0, g_listbuf, (I32)sizeof(g_listbuf) - 1);
+            if (prc == 0) break;
+            pump(0, 0);
+            if (waited >= timeout) goto list_failed;
+            Sleep(200);
+            waited += 200;
+        }
+
+        /* zoznam premennych je oddeleny znakom TAB -> kazda na vlastny riadok */
+        for (k = 0;; k++)
+        {
+            char c = g_listbuf[k];
+
+            if (c == '\t' || c == 0)
+            {
+                name[n] = 0;
+                if (n > 0 && s_contains_icmp(name, filter))
+                {
+                    out(name);
+                    out("\r\n");
+                }
+                n = 0;
+                if (c == 0) break;
+            }
+            else if (n < (int)sizeof(name) - 1) name[n++] = c;
+        }
+    }
     else /* write */
     {
         if (!write_value(idVar, val, timeout)) goto write_failed;
@@ -1227,6 +1282,18 @@ create_failed:
     if (idRoot) f_unlink(g_hPvi, idRoot);
     f_deinit(g_hPvi);
     return 4;
+
+list_failed:
+    out_errln("chyba: nepodarilo sa precitat zoznam premennych");
+    out_errln("  -> PLC neodpoveda, alebo AR nepovoluje vycet premennych");
+    if (idVar)  f_unlink(g_hPvi, idVar);
+    if (idTask) f_unlink(g_hPvi, idTask);
+    if (idCpu)  f_unlink(g_hPvi, idCpu);
+    if (idDev)  f_unlink(g_hPvi, idDev);
+    if (idLine) f_unlink(g_hPvi, idLine);
+    if (idRoot) f_unlink(g_hPvi, idRoot);
+    f_deinit(g_hPvi);
+    return 5;
 
 read_failed:
     if (idVar)  f_unlink(g_hPvi, idVar);
