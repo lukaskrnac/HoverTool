@@ -386,6 +386,8 @@ typedef struct { char vt[24]; int vl; int vn; char at[8]; } TVarType;
 static int file_exists(const char *p);
 static int try_dir(const char *base, const char *dll);
 static int read_value(U32 linkId, TVarType *t, int timeoutMs, int raw);
+static void out_err(const char *s);
+static void out_errln(const char *s);
 
 typedef I32 (PVIAPI *FN_INIT)(U32 *phPvi, I32 timeout, I32 retry, const char *param, void *res);
 typedef I32 (PVIAPI *FN_DEINIT)(U32 hPvi);
@@ -422,8 +424,21 @@ static int  g_nopause;
 typedef struct { U32 linkID, nMode, nType, errCode, status; } T_RESPONSE_INFO;
 typedef struct { U8 state0, state1, inv0, inv1; U32 res1; char lcName[65]; } T_LIC;
 
+static HPVI_OBJ g_lastmod;
+static int      g_api_missing;
+static char     g_missing[300];
+
+static void miss(const char *name)
+{
+    if (g_missing[0]) s_cat(g_missing, ", ", (int)sizeof(g_missing));
+    s_cat(g_missing, name, (int)sizeof(g_missing));
+}
+
 static int resolve(HPVI_OBJ mod, const char *path)
 {
+    g_lastmod = mod;
+    g_missing[0] = 0;
+
     f_init     = (FN_INIT)     GetProcAddress(mod, "PviXInitialize");
     f_deinit   = (FN_DEINIT)   GetProcAddress(mod, "PviXDeinitialize");
     f_setev    = (FN_SETEV)    GetProcAddress(mod, "PviXSetGlobEventMsg");
@@ -437,13 +452,66 @@ static int resolve(HPVI_OBJ mod, const char *path)
 
     s_cpy(g_dllpath, path, (int)sizeof(g_dllpath));
 
-    if (!f_init || !f_deinit || !f_setev || !f_create || !f_unlink ||
-        !f_read || !f_write || !f_nextresp || !f_respinfo || !f_readresp)
+    if (!f_init)     miss("PviXInitialize");
+    if (!f_deinit)   miss("PviXDeinitialize");
+    if (!f_setev)    miss("PviXSetGlobEventMsg");
+    if (!f_create)   miss("PviXCreate");
+    if (!f_unlink)   miss("PviXUnlink");
+    if (!f_read)     miss("PviXRead");
+    if (!f_write)    miss("PviXWrite");
+    if (!f_nextresp) miss("PviXGetNextResponse");
+    if (!f_respinfo) miss("PviXGetResponseInfo");
+    if (!f_readresp) miss("PviXReadResponse");
+
+    g_api_missing = (g_missing[0] != 0);
+    return !g_api_missing;
+}
+
+/* Vypise exporty nacitanej DLL (v in-process PE), aby bolo vidiet, ake API to je. */
+static void dump_exports(HPVI_OBJ mod, int maxShow)
+{
+    U8 *base = (U8 *)mod;
+    U32 pe, opt, expRva, nNames, addrNames, i, shown = 0;
+    char num[16];
+
+    if (!base || base[0] != 'M' || base[1] != 'Z')
     {
-        if (g_verbose) outln("  (DLL neobsahuje funkcie PviX*)");
-        return 0;
+        out_errln("  (nie je platna PE kniznica)");
+        return;
     }
-    return 1;
+    pe = *(U32 *)(base + 0x3C);
+    if (*(U32 *)(base + pe) != 0x00004550u)
+    {
+        out_errln("  (nie je platna PE kniznica)");
+        return;
+    }
+    opt = pe + 24;
+    expRva = *(U32 *)(base + opt + 96);
+    if (!expRva)
+    {
+        out_errln("  DLL nema ziadne exporty -> toto nie je klientska kniznica PVI");
+        return;
+    }
+
+    nNames    = *(U32 *)(base + expRva + 24);
+    addrNames = *(U32 *)(base + expRva + 32);
+
+    out_err("  DLL exportuje ");
+    u64_to_dec((U64)nNames, num);
+    out_err(num);
+    out_errln(" funkcii; tie zacinajuce na 'Pvi':");
+
+    for (i = 0; i < nNames && shown < (U32)maxShow; i++)
+    {
+        const char *nm = (const char *)(base + (*(U32 *)(base + addrNames + i * 4)));
+        if (nm[0] == 'P' && nm[1] == 'v' && nm[2] == 'i')
+        {
+            out_err("    ");
+            out_errln(nm);
+            shown++;
+        }
+    }
+    if (shown == 0) out_errln("    (ziadna - toto nebude PVI klientska kniznica)");
 }
 
 static int file_exists(const char *p) { return GetFileAttributesA(p) != 0xFFFFFFFFu; }
@@ -1066,9 +1134,32 @@ static int run(int argc, char **argv)
     /* --- 1) PVI kniznica ------------------------------------------------ */
     if (!load_pvi(dll))
     {
+        if (g_api_missing)
+        {
+            out_err("chyba: kniznica ");
+            out_err(g_dllpath);
+            out_errln(" sa nacitala, ale NEMA funkcie PviX*");
+            out_err("  chybaju: ");
+            out_errln(g_missing);
+            dump_exports(g_lastmod, 40);
+            out_errln("");
+            out_errln("  -> toto je STARSIA verzia PVI (stare API: PviInitialize, PviCreate,");
+            out_errln("     PviReadRequest, PviWriteRequest, ...). pvi_cli potrebuje PVI s API PviX*");
+            out_errln("     (overene: PVI 4.12 a PVI 6.x - na tychto stoji aj kniznica Pvi.py).");
+            out_errln("");
+            out_errln("  Moznosti:");
+            out_errln("   a) nainstalovat novsi PVI Development Setup (4.12 obsahuje aj INA2000):");
+            out_errln("      https://www.br-automation.com/en/downloads/software/automation-studio/automation-studio-3090/pvi-development-setup/");
+            out_errln("   b) pouzit .NET verziu (pvi-xp/src, build.cmd) s BR.AN.PviServices.dll, ktora");
+            out_errln("      je sucastou TVOJEJ instalacie PVI - funguje aj so starsim PVI");
+            out_errln("   c) ukazat na inu kniznicu:  --dll \"C:\\cesta\\k\\novejsiemu\\PviCom.dll\"");
+            return 2;
+        }
+
         out_errln("chyba: nepodarilo sa najst/nacitat PviCom.dll");
         out_errln("  - je PVI nainstalovane? (%PVI_INSTALL_FOLDER%)");
-        out_errln("  - skus:  pvi_cli read <var> --dll C:\\BrAutomation\\PVI\\V4.12\\Bin\\PviCom.dll");
+        out_errln("  - skus:  pvi_cli info --verbose --dll \"C:\\BrAutomation\\PVI\\V4.12\\Bin\\PviCom.dll\"");
+        out_errln("  - kde ju hladat:  dir /s /b C:\\PviCom.dll");
         return 2;
     }
     if (g_verbose) { out_err("PVI kniznica: "); out_errln(g_dllpath); }
