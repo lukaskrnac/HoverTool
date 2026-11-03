@@ -204,6 +204,27 @@ rem   offset PE+24+48 = WORD major/minor subsystem version
 Bez `-nostdlib` by sa program zlinkoval proti UCRT (`api-ms-win-crt-*.dll`), ktorý na XP
 neexistuje — preto sú v zdrojáku vlastné `memcpy/memset/strlen` a vlastné formátovanie čísel.
 
+## Ak DLL nemá funkcie `PviX*`
+
+Hláška `DLL sa nacitala, ale NEMA funkcie PviX*` znamená, že sa našla **stará verzia PVI**
+(staré C API má len `PviInitialize`, `PviCreate`, `PviReadRequest`, `PviWriteRequest`, …,
+nie synchrónne `PviXRead`/`PviXWrite`). Program ti v takom prípade vypíše **chybajúce funkcie
+aj to, čo DLL reálne exportuje** — podľa toho sa dá presne určiť generácia PVI.
+
+Možnosti:
+
+1. **Nainštalovať novší PVI** – `PviX*` API majú PVI 4.12 a PVI 6.x (na tých istých stojí
+   aj [Pvi.py](https://github.com/hilch/Pvi.py)). PVI 4.12 je posledná verejná verzia
+   s podporou `INA2000`:
+   <https://www.br-automation.com/en/downloads/software/automation-studio/automation-studio-3090/pvi-development-setup/>
+2. **Použiť .NET verziu** (`../src`, `..\build.cmd`) s `BR.AN.PviServices.dll`, ktorá je
+   **súčasťou tvojej** inštalácie PVI — tá funguje aj so starším PVI.
+3. Ukázať na inú knižnicu: `pvi_cli.exe info --verbose --dll "C:\cesta\PviCom.dll"`.
+
+Ako zistiť verziu PVI: v prieskumníku *pravé tlačidlo na `PviCom.dll` → Vlastnosti → Verzia*
+(alebo *PVI Monitor → Help → About*). Pošli mi ten výpis z `--verbose` a poviem ti, ktorá cesta
+je pre tvoju verziu správna.
+
 ## Riešenie problémov
 
 | Kód / príznak | Príčina |
