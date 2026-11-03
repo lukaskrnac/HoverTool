@@ -42,9 +42,12 @@ typedef void *             HPVI_OBJ;
    1) minimalne Win32 deklaracie (iba KERNEL32, ziadny windows.h)
    =========================================================================== */
 #define STD_OUTPUT_HANDLE ((U32)-11)
+#define STD_INPUT_HANDLE  ((U32)-10)
 
 __declspec(dllimport) HPVI_OBJ PVIAPI GetStdHandle(U32 nStdHandle);
 __declspec(dllimport) I32      PVIAPI WriteFile(HPVI_OBJ h, const void *buf, U32 n, U32 *written, void *ov);
+__declspec(dllimport) I32      PVIAPI ReadFile(HPVI_OBJ h, void *buf, U32 n, U32 *read, void *ov);
+__declspec(dllimport) U32      PVIAPI GetConsoleProcessList(U32 *list, U32 count);
 __declspec(dllimport) HPVI_OBJ PVIAPI LoadLibraryA(const char *name);
 __declspec(dllimport) HPVI_OBJ PVIAPI GetProcAddress(HPVI_OBJ mod, const char *name);
 __declspec(dllimport) U32      PVIAPI GetModuleFileNameA(HPVI_OBJ mod, char *buf, U32 n);
@@ -413,6 +416,7 @@ static FN_READRESP  f_readresp;
 static U32  g_hPvi;
 static char g_dllpath[512];
 static int  g_verbose;
+static int  g_nopause;
 
 typedef struct { U32 linkID, nMode, nType, errCode, status; } T_RESPONSE_INFO;
 typedef struct { U8 state0, state1, inv0, inv1; U32 res1; char lcName[65]; } T_LIC;
@@ -945,6 +949,7 @@ static void usage(void)
     outln("  --timeout <s>     ako dlho cakat na spojenie (default 5 s)");
     outln("  --raw             vypis dat ako HEX");
     outln("  --verbose         diagnostika na stderr");
+    outln("  --nopause         nezastavuj sa na konci (pre skripty)");
     outln("  --help            tento text");
     outln("");
     outln("Hodnota:  123   -5   1.5   TRUE   text   16#FF   0x1F   2#1010");
@@ -1022,6 +1027,7 @@ static int run(int argc, char **argv)
         else if (s_icmp(a, "--timeout") == 0 && i + 1 < argc) { parse_u64(argv[++i], &v); timeout = (int)v; }
         else if (s_icmp(a, "--raw") == 0)      raw = 1;
         else if (s_icmp(a, "--verbose") == 0)  g_verbose = 1;
+        else if (s_icmp(a, "--nopause") == 0)  g_nopause = 1;
         else if (a[0] == '-' && a[1] == '-')   { out_err("neznama volba: "); out_errln(a); return 1; }
         else if (!cmd) cmd = a;
         else if (!var) var = a;
@@ -1246,6 +1252,36 @@ write_failed:
 /* ===========================================================================
    7) vstupny bod (bez CRT)
    =========================================================================== */
+
+/* Ak bol program spusteny dvojklikom, je v konzole sam -> okno by hned zmizlo.
+   Preto pri takomto spusteni pockame na Enter (rovnako ako "pause" v .bat). */
+static void pause_if_needed(int rc)
+{
+    U32 pids[4];
+    U32 n;
+    char num[16];
+    char ch;
+    U32 got = 0;
+    HPVI_OBJ hIn;
+
+    if (g_nopause) return;
+
+    n = GetConsoleProcessList(pids, 4);
+    if (n != 1) return;            /* spustene z cmd.exe -> pauza netreba */
+
+    out("\r\nnavratovy kod: ");
+    u64_to_dec((U64)(U32)rc, num);
+    out(num);
+    out("\r\nStlac Enter pre ukoncenie...");
+    out_flush();
+
+    hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != 0 && hIn != (HPVI_OBJ)-1)
+    {
+        ReadFile(hIn, &ch, 1, &got, 0);
+    }
+}
+
 void mainCRTStartup(void)
 {
     static char cmdline[2048];
@@ -1256,6 +1292,7 @@ void mainCRTStartup(void)
     argc = split_cmdline(cmdline, argv, 64);
     rc = run(argc, argv);
 
+    pause_if_needed(rc);
     out_flush();
     ExitProcess((U32)rc);
 }

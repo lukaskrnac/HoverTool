@@ -71,6 +71,35 @@ for /f %%v in ('pvi_cli.exe read gTest.iCounter --ip 192.168.1.10') do set HODNO
 Návratové kódy: `0` ok · `1` parametre · `2` nenašiel DLL · `3` init PVI ·
 `4` vytvorenie objektov · `5` čítanie · `6` zápis.
 
+## Spúšťanie (pozor: je to konzolový program!)
+
+Dvojklik v Prieskumníku otvorí okno, program prebehne a **okno sa zavrie** — to je normálne
+správanie konzolovej aplikácie, nie chyba. Preto:
+
+* **od verzie „s pauzou“** program zistí, že bol spustený samostatne (je jediný proces
+  v konzole) a na konci vypíše `navratovy kod: N` a **počká na Enter**;
+* **odporúčané je spúšťať z `cmd`** — vidíš celý výstup a nič nezmizne:
+
+```bat
+Start -> Spustit... -> cmd
+cd /d C:\pvi
+pvi_cli.exe info --verbose
+```
+
+* v dávke/skripte pridaj `--nopause`, aby sa nič nečakalo:
+
+```bat
+pvi_cli.exe read gTest.iCounter --ip 192.168.1.10 --nopause
+```
+
+Prvý diagnostický beh, ktorý odporúčam (ne potrebuje PLC ani vedieť premennú):
+
+```bat
+pvi_cli.exe info --verbose
+```
+
+Vypíše, ktorú `PviCom.dll` našiel, či sa pripojil na PVI Manager, verziu PVI a stav licencie.
+
 ## Ako si nájde knižnicu
 
 Poradie (prvé úspešné vyhráva):
